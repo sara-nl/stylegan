@@ -195,7 +195,7 @@ def display(tfrecord_dir):
     tflib.init_tf({'gpu_options.allow_growth': True})
     dset = dataset.TFRecordDataset(tfrecord_dir, max_label_size='full', repeat=False, shuffle_mb=0)
     tflib.init_uninitialized_vars()
-    import cv2  # pip install opencv-python
+    #import cv2  # pip install opencv-python
 
     idx = 0
     while True:
@@ -205,13 +205,13 @@ def display(tfrecord_dir):
             break
         if idx == 0:
             print('Displaying images')
-            cv2.namedWindow('dataset_tool')
+            #cv2.namedWindow('dataset_tool')
             print('Press SPACE or ENTER to advance, ESC to exit')
         print('\nidx = %-8d\nlabel = %s' % (idx, labels[0].tolist()))
-        cv2.imshow('dataset_tool', images[0].transpose(1, 2, 0)[:, :, ::-1]) # CHW => HWC, RGB => BGR
+        #cv2.imshow('dataset_tool', images[0].transpose(1, 2, 0)[:, :, ::-1]) # CHW => HWC, RGB => BGR
         idx += 1
-        if cv2.waitKey() == 27:
-            break
+        #if cv2.waitKey() == 27:
+        #    break
     print('\nDisplayed %d images.' % idx)
 
 #----------------------------------------------------------------------------
@@ -283,6 +283,144 @@ def compare(tfrecord_dir_a, tfrecord_dir_b, ignore_labels):
     print('Identical images: %d / %d' % (identical_images, idx))
     if not ignore_labels:
         print('Identical labels: %d / %d' % (identical_labels, idx))
+
+#----------------------------------------------------------------------------
+
+# import dataset_tool as dt
+# dt.create_chestxray('test_data/tfr_test/', 'test_data/', 'test_data/Data_Entry_2017.csv', 'test_data/labelmap_chestxray_gender.map', columns=['Patient Gender'])
+
+def create_chestxray(tfrecord_dir, chestxray_dir, labels_dir=None, column='Patient Findings', export_labelmap=True):
+    """
+    Generates TF_records from the xray dataset with labels (optional)
+    Stores labels as feature vectors.
+
+    Arguments:
+        labels_dir:      If specified, should point to the file containing a column
+                         with the image names 'Image Index' and data for each image.
+                         If None, does not export labels.
+        column:          Column name in data file from which to export labels.
+                         Must be set if labels_dir is not None.
+        export_labelmap: If true, exports generated labelmap. Contains feature vector index
+                         for each label.
+    """
+
+    print('Loading chestXray from "%s"' % chestxray_dir)
+    print('WARNING: this function needs at least 50 GB to run, as it keeps all compressed zips for the CHESTXRAY dataset in memory, in order to write them to TFRecords in a random order')
+
+    # A column must be given when exporting labels...
+    if labels_dir:
+        assert column != None, "Specify the column from which to extract the labels from."
+
+    # Listing all images*.zip's
+    glob_pattern = os.path.join(chestxray_dir, 'images_*.zip')
+    zipfiles = sorted(glob.glob(glob_pattern))
+    images = []
+    # Will hold all image ids
+    image_ids = []
+    imgUncommonDims = []
+
+    import zipfile
+    import re
+    import math
+    import pandas as pd
+
+    pattern = re.compile(".*\.png")
+    # Loop through all zipfiles
+    for filename in zipfiles:
+        with zipfile.ZipFile(filename, 'r') as zip:
+            # For each file in the zipfile...
+            for entry in zip.infolist():
+                # Check if the file matches the pattern, i.e. is a *.png file. If so, open it, and append the result to images.
+                if pattern.match(entry.filename):
+                    with zip.open(entry) as file:
+                        images.append(PIL.Image.open(file))
+                        # Save image ids for gathering data
+                        image_ids.append(file.name.split('/')[-1])
+                    
+    # ChestXray should contain 112120 images
+    print('Loaded %s images' % len(images))
+    chestxray_imagecount = 112120
+    if len(images) != chestxray_imagecount and len(image_ids) != chestxray_imagecount:
+        print('ERROR: ChestXray dataset should contain 112120 images. Exiting.')
+        assert len(images) == chestxray_imagecount
+    
+    print('Exporting images to TFRecords')
+    # All images were loaded, now creating TFrecords for all resolutions:
+    with TFRecordExporter(tfrecord_dir, chestxray_imagecount) as tfr:
+        # Index order in which to export data
+        order = tfr.choose_shuffled_order()
+        for idx in range(order.size):
+            img = np.asarray(images[order[idx]])
+            if img.shape != (1024, 1024):
+                # Check if this image was stored as RGBa, with a the alpha channel:
+                if img.shape == (1024, 1024, 4):
+                    channel01Equal = (img[:,:,0]==img[:,:,1])
+                    channel02Equal = (img[:,:,0]==img[:,:,2])
+                    channel3is255 = (img[:,:,3]==255)
+                    if (channel01Equal.all() & channel02Equal.all() & channel3is255.all()):
+                        # This was an RGBa image, with the RGB channels equal and alpha channel 255. Thus, we can just interpret it as greyscale by selecting the R channel
+                        img = img[:,:,0]
+                        img = img.reshape(1,img.shape[0], img.shape[1]) # cuDNN order: Channel-height-width (CHW), see also the img.transpose in create_celeba
+                    else:
+                        print('ERROR: incorrect image shape (%s) for image %s' % (img.shape, order[idx]))
+                        imgUncommonDims.append(img)
+                else:
+                    print('ERROR: incorrect image shape (%s) for image %s' % (img.shape, order[idx]))
+                    imgUncommonDims.append(img)
+            else:
+                img = img.reshape(1,img.shape[0], img.shape[1]) # cuDNN order: Channel-height-width (CHW), see also the img.transpose in create_celeba
+            # By this point, the img.shape SHOULD be as we expect it: 1 channel x 1024 pixels x 1024 pixels
+            assert img.shape == (1, 1024, 1024)
+            tfr.add_image(img)
+            # Make sure that the decompressed image is now removed, otherwise it will keep taking up space:
+            images[order[idx]] = None
+
+        # Export labels
+        if labels_dir:
+            # Sort image ids based on TF shuffle
+            image_ids = [image_ids[i] for i in order]
+            data = pd.read_csv(labels_dir)
+
+            # Get all unique labels
+            multi_labels = data[column].unique()
+            labels = set()
+            for m_label in multi_labels:
+                m_label = m_label.split('|')
+                for label in m_label:
+                    labels.add(label)
+
+            # Generate labelmap
+            print('Generating labelmap...')
+            label_size = len(labels)
+            labelmap = {}
+            for i, label in enumerate(labels):
+                labelmap[label] = i
+            print('labelmap:', labelmap)
+            multihot = np.zeros((len(image_ids), label_size), dtype=np.float32)
+        
+            # Generate labels
+            print('Generating Labels...')
+            progress_counter = 0
+            for i, im_id in enumerate(image_ids):
+                # Gather labels
+                df_im_id = data[data['Image Index'] == im_id][column]
+                m_label = list(df_im_id)[0]
+                m_label = m_label.split('|')
+                # Set multihot vector label positions
+                for label in m_label:
+                    multihot[i][labelmap[label]] = 1.0
+                # Print progress
+                if progress_counter % 1000 == 0:
+                    print(f'{progress_counter}/{112120}')
+                progress_counter += 1
+
+            # Save labelmap
+            if export_labelmap:
+                print('Saving labelmap...')
+                with open(tfr.tfr_prefix + 'labelmap-rxx.map', 'w') as f:
+                    for label in labelmap:
+                        f.write(f'{label}:{labelmap[label]}\n')
+            tfr.add_labels(multihot)
 
 #----------------------------------------------------------------------------
 
@@ -640,6 +778,7 @@ def execute_cmdline(argv):
 #----------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    execute_cmdline(sys.argv)
+    display(sys.argv[1])
+    #execute_cmdline(sys.argv)
 
 #----------------------------------------------------------------------------

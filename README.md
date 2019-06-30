@@ -1,3 +1,5 @@
+## To view the implemented changes for the support of conditionals, metrics and Horovod view README_CHANGES.md!
+
 ## StyleGAN &mdash; Official TensorFlow Implementation
 ![Python 3.6](https://img.shields.io/badge/python-3.6-green.svg?style=plastic)
 ![TensorFlow 1.10](https://img.shields.io/badge/tensorflow-1.10-green.svg?style=plastic)

@@ -10,9 +10,10 @@
 #----------------------------------------------------------------------------
 # Paths.
 
-result_dir = 'results'
-data_dir = 'datasets'
-cache_dir = 'cache'
+result_dir = '/home/veefkind/stylegan_results'
+data_dir = '/scratch/CHESTXRAY'
+cache_dir = '/home/veefkind/stylegan_cache'
 run_dir_ignore = ['results', 'datasets', 'cache']
+metrics_model_dir = '/home/veefkind/stylegan/metrics/inception_v3_features.pkl'
 
 #----------------------------------------------------------------------------
